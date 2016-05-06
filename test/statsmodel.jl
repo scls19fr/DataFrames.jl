@@ -49,7 +49,7 @@ mm = ModelMatrix(ModelFrame(f, d))
 @test predict(m, d) == predict(m, mm.m)
 
 d2 = deepcopy(d)
-d2[3, :x1] = NA
+d2[3, :x1] = Nullable()
 @test length(predict(m, d2)) == 4
 
 ## test copying of names from Terms to CoefTable
@@ -60,7 +60,7 @@ ct = coeftable(m)
 @show m
 
 ## with categorical variables
-d[:x1p] = PooledDataArray(d[:x1])
+d[:x1p] = NominalArray(d[:x1])
 f2 = y ~ x1p
 m2 = fit(DummyMod, f2, d)
 

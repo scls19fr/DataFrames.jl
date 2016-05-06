@@ -1,7 +1,7 @@
 module TestIteration
     using Base.Test, DataFrames, Compat
 
-    dv = @data([1, 2, NA])
+    dv = NullableArray([1, 2, Nullable()])
     dm = DataArray([1 2; 3 4])
     dt = DataArray(zeros(2, 2, 2))
 

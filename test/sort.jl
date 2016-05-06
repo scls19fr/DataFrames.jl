@@ -2,10 +2,10 @@ module TestSort
     using Base.Test
     using DataFrames
 
-    dv1 = @data([9, 1, 8, NA, 3, 3, 7, NA])
+    dv1 = NullableArray([9, 1, 8, Nullable(), 3, 3, 7, Nullable()])
     dv2 = 1.0 * dv1
     dv3 = DataArray([1:8;])
-    pdv1 = convert(PooledDataArray, dv1)
+    pdv1 = convert(NominalArray, dv1)
 
     d = DataFrame(dv1 = dv1, dv2 = dv2, dv3 = dv3, pdv1 = pdv1)
 

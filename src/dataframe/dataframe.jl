@@ -6,7 +6,7 @@
 An AbstractDataFrame that stores a set of named columns
 
 The columns are normally AbstractVectors stored in memory,
-particularly a Vector, DataVector, or PooledDataVector.
+particularly a Vector, NullableVector, or NominalVector.
 
 **Constructors**
 
@@ -34,9 +34,9 @@ Each column in `columns` should be the same length.
 
 **Notes**
 
-Most of the default constructors convert columns to `DataArrays`.  The
+Most of the default constructors convert columns to `NullableArray`.  The
 base constructor, `DataFrame(columns::Vector{Any},
-names::Vector{Symbol})` does not convert to `DataArrays`.
+names::Vector{Symbol})` does not convert to `NullableArray`.
 
 A `DataFrame` is a lightweight object. As long as columns are not
 manipulated, creation of a DataFrame from existing AbstractVectors is
@@ -53,7 +53,7 @@ loops.
 df = DataFrame()
 v = ["x","y","z"][rand(1:3, 10)]
 df1 = DataFrame(Any[[1:10], v, rand(10)], [:A, :B, :C])  # columns are Arrays
-df2 = DataFrame(A = 1:10, B = v, C = rand(10))           # columns are DataArrays
+df2 = DataFrame(A = 1:10, B = v, C = rand(10))           # columns are NullableArrays
 dump(df1)
 dump(df2)
 describe(df2)
@@ -116,7 +116,7 @@ end
 function DataFrame(t::Type, nrows::Integer, ncols::Integer)
     columns = Array(Any, ncols)
     for i in 1:ncols
-        columns[i] = DataArray(t, nrows)
+        columns[i] = NullableArray(t, nrows)
     end
     cnames = gennames(ncols)
     return DataFrame(columns, Index(cnames))
@@ -127,19 +127,21 @@ function DataFrame(column_eltypes::Vector, cnames::Vector, nrows::Integer)
     p = length(column_eltypes)
     columns = Array(Any, p)
     for j in 1:p
-        columns[j] = DataArray(column_eltypes[j], nrows)
+        columns[j] = NullableArray(column_eltypes[j], nrows)
     end
     return DataFrame(columns, Index(cnames))
 end
-# Initialize an empty DataFrame with specific eltypes and names and whether is pooled data array
-function DataFrame(column_eltypes::Vector{DataType}, cnames::Vector{Symbol}, ispda::Vector{Bool}, nrows::Integer)
+# Initialize an empty DataFrame with specific eltypes and names
+# and whether a nominal array should be created
+function DataFrame(column_eltypes::Vector{DataType}, cnames::Vector{Symbol},
+                   nominal::Vector{Bool}, nrows::Integer)
     p = length(column_eltypes)
     columns = Array(Any, p)
     for j in 1:p
-      if ispda[j]
-        columns[j] = PooledDataArray(column_eltypes[j], nrows)
+      if nominal[j]
+        columns[j] = NullableNominalArray(column_eltypes[j], nrows)
       else
-        columns[j] = DataArray(column_eltypes[j], nrows)
+        columns[j] = NullableArray(column_eltypes[j], nrows)
       end
     end
     return DataFrame(columns, Index(cnames))
@@ -151,7 +153,7 @@ function DataFrame(column_eltypes::Vector, nrows::Integer)
     columns = Array(Any, p)
     cnames = gennames(p)
     for j in 1:p
-        columns[j] = DataArray(column_eltypes[j], nrows)
+        columns[j] = NullableArray(column_eltypes[j], nrows)
     end
     return DataFrame(columns, Index(cnames))
 end
@@ -171,8 +173,8 @@ function DataFrame{D <: Associative}(ds::Vector{D}, ks::Vector)
     col_eltypes = Type[@compat(Union{}) for _ = 1:length(ks)]
     for d in ds
         for (i,k) in enumerate(ks)
-            # TODO: check for user-defined "NA" values, ala pandas
-            if haskey(d, k) && !isna(d[k])
+            # FIXME: types and nullables
+            if haskey(d, k) && !_isnull(d[k])
                 col_eltypes[i] = promote_type(col_eltypes[i], typeof(d[k]))
             end
         end
@@ -183,7 +185,7 @@ function DataFrame{D <: Associative}(ds::Vector{D}, ks::Vector)
     df = DataFrame(col_eltypes, ks, length(ds))
     for (i,d) in enumerate(ds)
         for (j,k) in enumerate(ks)
-            df[i,j] = get(d, k, NA)
+            df[i,j] = get(d, k, Nullable())
         end
     end
 
@@ -348,17 +350,18 @@ function insert_multiple_entries!{T <: Real}(df::DataFrame,
     end
 end
 
-upgrade_vector(v::Vector) = DataArray(v, falses(length(v)))
-upgrade_vector(v::Range) = DataArray([v;], falses(length(v)))
-upgrade_vector(v::BitVector) = DataArray(convert(Array{Bool}, v), falses(length(v)))
-upgrade_vector(adv::AbstractDataArray) = adv
+upgrade_vector{T<:Nullable}(v::AbstractArray{T}) = v
+upgrade_vector(v::NominalArray) = NullableNominalArray(v)
+upgrade_vector(v::OrdinalArray) = NullableOrdinalArray(v)
+upgrade_vector(v::AbstractArray) = NullableArray(v)
+
 function upgrade_scalar(df::DataFrame, v::AbstractArray)
     msg = "setindex!(::DataFrame, ...) only broadcasts scalars, not arrays"
     throw(ArgumentError(msg))
 end
 function upgrade_scalar(df::DataFrame, v::Any)
     n = (ncol(df) == 0) ? 1 : nrow(df)
-    DataArray(fill(v, n), falses(n))
+    NullableArray(fill(v, n))
 end
 
 # df[SingleColumnIndex] = AbstractVector
@@ -625,8 +628,20 @@ function Base.insert!(df::DataFrame, col_ind::Int, item::AbstractVector, name::S
     insert!(df.columns, col_ind, item)
     df
 end
-Base.insert!(df::DataFrame, col_ind::Int, item, name::Symbol) =
+
+# FIXME: why is this needed for test/dataframe.jl to pass?
+function Base.insert!(df::DataFrame, col_ind::Int, item::NullableArray, name::Symbol)
+    0 < col_ind <= ncol(df) + 1 || throw(BoundsError())
+    size(df, 1) == length(item) || size(df, 1) == 0 || error("number of rows does not match")
+
+    insert!(index(df), col_ind, name)
+    insert!(df.columns, col_ind, item)
+    df
+end
+
+function Base.insert!(df::DataFrame, col_ind::Int, item, name::Symbol)
     insert!(df, col_ind, upgrade_scalar(df, item), name)
+end
 
 function Base.merge!(df::DataFrame, others::AbstractDataFrame...)
     for other in others
@@ -725,9 +740,9 @@ function hcat!(df1::DataFrame, df2::AbstractDataFrame)
 
     return df1
 end
-hcat!{T}(df::DataFrame, x::DataVector{T}) = hcat!(df, DataFrame(Any[x]))
-hcat!{T}(df::DataFrame, x::Vector{T}) = hcat!(df, DataFrame(Any[DataArray(x)]))
-hcat!{T}(df::DataFrame, x::T) = hcat!(df, DataFrame(Any[DataArray([x])]))
+hcat!(df::DataFrame, x::NullableVector) = hcat!(df, DataFrame(Any[x]))
+hcat!(df::DataFrame, x::Vector) = hcat!(df, DataFrame(Any[NullableArray(x)]))
+hcat!(df::DataFrame, x) = hcat!(df, DataFrame(Any[NullableArray([x])]))
 
 # hcat! for 1-n arguments
 hcat!(df::DataFrame) = df
@@ -743,7 +758,7 @@ Base.hcat(df::DataFrame, x) = hcat!(copy(df), x)
 ##############################################################################
 
 function nullable!(df::DataFrame, col::ColumnIndex)
-    df[col] = DataArray(df[col])
+    df[col] = NullableArray(df[col])
     df
 end
 function nullable!{T <: ColumnIndex}(df::DataFrame, cols::Vector{T})
@@ -759,7 +774,7 @@ end
 ##
 ##############################################################################
 
-pool(a::AbstractVector) = compact(PooledDataArray(a))
+pool(a::AbstractVector) = compact(NominalArray(a))
 
 function pool!(df::DataFrame, cname::@compat(Union{Integer, Symbol}))
     df[cname] = pool(df[cname])
@@ -815,7 +830,7 @@ function _dataframe_from_associative(dnames, d::Associative)
         if length(col) != n
             throw(ArgumentError("All columns in Dict must have the same length"))
         end
-        columns[j] = DataArray(col)
+        columns[j] = NullableArray(col)
         colnames[j] = Symbol(name)
     end
     return DataFrame(columns, Index(colnames))

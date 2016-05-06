@@ -216,30 +216,19 @@ function remove_response(t::Terms)
     return t
 end
 
-## Default NA handler.  Others can be added as keyword arguments
-function na_omit(df::DataFrame)
+## Default NULL handler.  Others can be added as keyword arguments
+function null_omit(df::DataFrame)
     cc = complete_cases(df)
     df[cc,:], cc
 end
 
-## Trim the pool field of da to only those levels that occur in the refs
-function dropUnusedLevels!(da::PooledDataArray)
-    rr = da.refs
-    uu = unique(rr)
-    length(uu) == length(da.pool) && return da
-    T = eltype(rr)
-    su = sort!(uu)
-    dict = Dict(zip(su, one(T):convert(T, length(uu))))
-    da.refs = map(x -> dict[x], rr)
-    da.pool = da.pool[uu]
-    da
-end
-dropUnusedLevels!(x) = x
+_droplevels!(x::Any) = x
+_droplevels!(x::Union{CategoricalArray, NullableCategoricalArray}) = droplevels!(x)
 
 function ModelFrame(trms::Terms, d::AbstractDataFrame)
-    df, msng = na_omit(DataFrame(map(x -> d[x], trms.eterms)))
+    df, msng = null_omit(DataFrame(map(x -> d[x], trms.eterms)))
     names!(df, convert(Vector{Symbol}, map(string, trms.eterms)))
-    for c in eachcol(df) dropUnusedLevels!(c[2]) end
+    for c in eachcol(df) _droplevels!(c[2]) end
     ModelFrame(df, trms, msng)
 end
 
@@ -261,9 +250,10 @@ end
 contr_treatment(n::Integer,contrasts::Bool,sparse::Bool) = contr_treatment(n,contrasts,sparse,1)
 contr_treatment(n::Integer,contrasts::Bool) = contr_treatment(n,contrasts,false,1)
 contr_treatment(n::Integer) = contr_treatment(n,true,false,1)
-cols(v::PooledDataVector) = contr_treatment(length(v.pool))[v.refs,:]
-cols(v::DataVector) = convert(Vector{Float64}, v.data)
-cols(v::Vector) = convert(Vector{Float64}, v)
+# FIXME: avoid direct access to fields (and useless copy)
+cols(v::Union{CategoricalVector, NullableCategoricalVector}) =
+    contr_treatment(length(levels(v)))[v.pool.order[v.refs],:]
+cols(v::AbstractVector) = convert(Vector{Float64}, v)
 
 function isfe(ex::Expr)                 # true for fixed-effects terms
     if ex.head != :call error("Non-call expression encountered") end
@@ -313,7 +303,7 @@ function ModelMatrix(mf::ModelFrame)
 end
 
 termnames(term::Symbol, col) = [string(term)]
-function termnames(term::Symbol, col::PooledDataArray)
+function termnames(term::Symbol, col::Union{CategoricalArray, NullableCategoricalArray})
     levs = levels(col)
     [string(term, " - ", levs[i]) for i in 2:length(levs)]
 end
